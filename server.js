@@ -9,19 +9,20 @@ app.use(express.json());
 
 const razorpay = new Razorpay({
   key_id: "rzp_test_TbZAlloBgol1LS",
-  key_secret: "***********************" // Razorpay dashboard nundi secret ikkada pettu
+  key_secret: "YOUR_KEY_SECRET_HERE" // Razorpay Dashboard nundi secret ikkada pettu
 });
 
 app.get('/', (req,res) => res.send('Running OK'));
 
 app.post('/api/create-order', async (req,res) => {
   try {
+    const amount = req.body.amount || 10;
     const order = await razorpay.orders.create({
-      amount: 100 * 100,
+      amount: amount * 100,
       currency: "INR",
       receipt: "vp_" + Date.now()
     });
-    res.json({ success: true, order });
+    res.json(order); // Frontend ki direct order pampali
   } catch(e){
     res.status(500).json({ success: false, error: e.message });
   }
