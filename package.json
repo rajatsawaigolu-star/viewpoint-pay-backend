@@ -1,8 +1,26 @@
-{
-  "name": "viewpoint-pay-backend",
-  "main": "server.js",
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5"
-  }
-}
+const express = require('express');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
+const cors = require('cors');
+require('dotenv').config();
+const app = express();
+app.use(cors({origin:'*'}));
+app.use(express.json());
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET
+});
+app.get('/',(req,res)=>res.send('Running OK'));
+app.post('/api/create-order', async (req,res)=>{
+  const order = await razorpay.orders.create({amount:100*100,currency:'INR',receipt:'vp_'+Date.now()});
+  res.json({success:true,order});
+});
+app.post('/api/verify-payment',(req,res)=>{
+  const {razorpay_order_id,razorpay_payment_id,razorpay_signature}=req.body;
+  const body = razorpay_order_id+'|'+razorpay_payment_id;
+  const expected = crypto.createHmac('sha256',process.env.RAZORPAY_KEY_SECRET).update(body).digest('hex');
+  if(expected===razorpay_signature) res.json({success:true});
+  else res.status(400).json({success:false});
+});
+const PORT=process.env.PORT||10000;
+app.listen(PORT,()=>console.log('Run '+PORT));
