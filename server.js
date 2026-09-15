@@ -1,38 +1,32 @@
-const express = require("express");
-const crypto = require("crypto");
-const cors = require("cors");
+const express = require('express');
+const cors = require('cors');
 const app = express();
-app.use(cors({ origin: "*" }));
+app.use(cors());
 app.use(express.json());
-const tokens = new Map();
-const pendingPayments = [];
-app.get("/", (req, res) => res.send("Viewpoint backend is running"));
-app.post("/api/request-access", (req, res) => {
-  const {utr} = req.body;
-  if(!utr) return res.status(400).json({ok:false});
-  const id = Date.now().toString();
-  pendingPayments.push({id, utr, time: new Date().toISOString()});
-  res.json({ok:true});
+
+let payments = [];
+
+app.get('/', (req,res)=> res.send('Viewpoint backend is running - UTR System Active'));
+
+app.post('/api/payment/submit', (req,res)=>{
+  const { utr } = req.body;
+  if(!utr || utr.length < 6) return res.json({success:false, msg:'Invalid UTR'});
+  payments.push({utr, amount:20, status:'pending', time:Date.now()});
+  res.json({success:true});
 });
-app.get("/admin/approve/:secret", (req, res) => {
-  if(req.params.secret !== process.env.ADMIN_SECRET) return res.status(403).send("No");
-  let html = "<h2>Pending</h2>";
-  pendingPayments.forEach(p => {
-    html += `<p>${p.utr} <a href="/admin/give-token/${process.env.ADMIN_SECRET}/${p.id}">Give</a></p>`;
-  });
-  res.send(html);
+
+app.get('/api/payment/check/:utr', (req,res)=>{
+  let p = payments.find(x=>x.utr===req.params.utr);
+  if(!p) return res.json({status:'not_found'});
+  res.json({status:p.status});
 });
-app.get("/admin/give-token/:secret/:id", (req, res) => {
-  if(req.params.secret !== process.env.ADMIN_SECRET) return res.status(403).send("No");
-  const token = crypto.randomBytes(24).toString("hex");
-  tokens.set(token, {used:false});
-  const link = `${process.env.FRONTEND_URL}?token=${token}`;
-  res.send(`<a href="${link}">${link}</a>`);
+
+app.get('/api/admin/payments', (req,res)=> res.json(payments));
+
+app.post('/api/admin/approve', (req,res)=>{
+  let p = payments.find(x=>x.utr===req.body.utr);
+  if(p) p.status='approved';
+  res.json({success:true});
 });
-app.get("/api/watch/:token", (req, res) => {
-  const d = tokens.get(req.params.token);
-  if(!d || d.used) return res.status(403).json({ok:false});
-  d.used = true;
-  res.json({ok:true, videoUrl: process.env.PRIVATE_VIDEO_URL});
-});
-app.listen(process.env.PORT || 10000);
+
+app.listen(10000, ()=> console.log('Running'));
