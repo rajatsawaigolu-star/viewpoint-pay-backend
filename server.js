@@ -9,7 +9,7 @@ app.use(express.json());
 
 const razorpay = new Razorpay({
   key_id: "rzp_test_TbZAlloBgol1LS",
-  key_secret: "YOUR_KEY_SECRET_HERE" // Razorpay Dashboard nundi secret ikkada pettu
+  key_secret: "***********************" // Razorpay Dashboard nundi secret ikkada pettu
 });
 
 app.get('/', (req,res) => res.send('Running OK'));
