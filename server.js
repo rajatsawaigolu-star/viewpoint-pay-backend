@@ -90,14 +90,16 @@ let supabaseAdmin = null;
 try {
   const { createClient } = require("@supabase/supabase-js");
 
-  if (process.env.SUPABASE_URL) {
+  if (
+    process.env.SUPABASE_URL &&
+    process.env.SUPABASE_ANON_KEY &&
+    process.env.SUPABASE_SERVICE_ROLE_KEY
+  ) {
     supabase = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_ANON_KEY
     );
 
-    // Server-side privileged client
-    // SERVICE ROLE KEY must NEVER be put inside App.js/frontend.
     supabaseAdmin = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -111,8 +113,6 @@ try {
 // CONFIG
 // ======================================================
 
-const UPI_ID = "pgangadhar444-1@oksbi";
-
 const ADMIN_SECRET =
   process.env.ADMIN_VERIFICATION_SECRET || "change-this-in-env";
 
@@ -125,41 +125,158 @@ app.get("/", (req, res) => {
     ok: true,
     project: "viewpoint-pay-backend",
     glf_module: "active",
+    account_module: "active",
     ledger: "verified-only"
   });
 });
 
 // ======================================================
-// PAYMENT INFO
+// CREATE GLF ACCOUNT
 // ======================================================
 
-app.get("/api/payment-info", (req, res) => {
-  res.json({
-    upiId: UPI_ID,
-    name: "View Point - GLF",
-    note: "Manual Verification Only"
-  });
-});
-
-// ======================================================
-// CREATE ASSISTANCE / PAYMENT REQUEST
-// ======================================================
-
-app.post("/api/assistance/request", async (req, res) => {
+app.post("/api/glf/account/create", async (req, res) => {
   try {
-    if (!supabase) {
+    if (!supabaseAdmin) {
       return res.status(500).json({
-        error: "Supabase not connected"
+        error: "Supabase admin client not configured"
       });
     }
 
     const {
+      full_name,
+      mobile,
+      email
+    } = req.body;
+
+    if (!full_name || String(full_name).trim().length < 2) {
+      return res.status(400).json({
+        error: "Valid full name kavali"
+      });
+    }
+
+    if (!mobile || String(mobile).trim().length < 10) {
+      return res.status(400).json({
+        error: "Valid mobile number kavali"
+      });
+    }
+
+    // Generate a unique GLF account ID.
+    const accountId =
+      "GLF-" +
+      Date.now().toString(36).toUpperCase() +
+      "-" +
+      crypto.randomBytes(3).toString("hex").toUpperCase();
+
+    const {
+      data,
+      error
+    } = await supabaseAdmin
+      .from("glf_accounts")
+      .insert([
+        {
+          account_id: accountId,
+          full_name: String(full_name).trim(),
+          mobile: String(mobile).trim(),
+          email: email ? String(email).trim() : null,
+          status: "ACTIVE"
+        }
+      ])
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      account: data
+    });
+
+  } catch (e) {
+    console.error("GLF account create error:", e);
+
+    res.status(500).json({
+      error: "GLF account creation failed"
+    });
+  }
+});
+
+// ======================================================
+// GET GLF ACCOUNT
+// ======================================================
+
+app.get("/api/glf/account/:account_id", async (req, res) => {
+  try {
+    if (!supabaseAdmin) {
+      return res.status(500).json({
+        error: "Supabase admin client not configured"
+      });
+    }
+
+    const accountId = String(req.params.account_id || "").trim();
+
+    if (!accountId) {
+      return res.status(400).json({
+        error: "Account ID required"
+      });
+    }
+
+    const {
+      data,
+      error
+    } = await supabaseAdmin
+      .from("glf_accounts")
+      .select("*")
+      .eq("account_id", accountId)
+      .single();
+
+    if (error) {
+      return res.status(404).json({
+        error: "GLF account not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      account: data
+    });
+
+  } catch (e) {
+    console.error("GLF account fetch error:", e);
+
+    res.status(500).json({
+      error: "GLF account fetch failed"
+    });
+  }
+});
+
+// ======================================================
+// CREATE ASSISTANCE REQUEST
+// ======================================================
+
+app.post("/api/assistance/request", async (req, res) => {
+  try {
+    if (!supabaseAdmin) {
+      return res.status(500).json({
+        error: "Supabase admin client not configured"
+      });
+    }
+
+    const {
+      account_id,
       amount,
       utr_number,
       user_name
     } = req.body;
 
     const numericAmount = Number(amount);
+
+    if (!account_id) {
+      return res.status(400).json({
+        error: "GLF Account ID kavali"
+      });
+    }
 
     if (
       !Number.isFinite(numericAmount) ||
@@ -179,19 +296,46 @@ app.post("/api/assistance/request", async (req, res) => {
       });
     }
 
-    const { data, error } = await supabase
+    const {
+      data: account,
+      error: accountError
+    } = await supabaseAdmin
+      .from("glf_accounts")
+      .select("account_id, full_name, status")
+      .eq("account_id", account_id)
+      .single();
+
+    if (accountError || !account) {
+      return res.status(404).json({
+        error: "GLF account not found"
+      });
+    }
+
+    if (account.status !== "ACTIVE") {
+      return res.status(400).json({
+        error: "GLF account is not active"
+      });
+    }
+
+    const {
+      data,
+      error
+    } = await supabaseAdmin
       .from("glf_assistance_requests")
       .insert([
         {
+          account_id: account_id,
           amount: Math.round(numericAmount),
           utr_number: String(utr_number).trim(),
-          user_name: user_name || "Trial User",
-          payment_method: "UPI_QR",
-          upi_id_used: UPI_ID,
+          user_name:
+            user_name ||
+            account.full_name ||
+            "GLF User",
           status: "Pending Verification"
         }
       ])
-      .select();
+      .select()
+      .single();
 
     if (error) {
       throw error;
@@ -204,16 +348,16 @@ app.post("/api/assistance/request", async (req, res) => {
     });
 
   } catch (e) {
-    console.error("Request error:", e);
+    console.error("Assistance request error:", e);
 
     res.status(500).json({
-      error: "Request failed"
+      error: "Assistance request failed"
     });
   }
 });
 
 // ======================================================
-// ADMIN: LIST REQUESTS
+// ADMIN: LIST ASSISTANCE REQUESTS
 // ======================================================
 
 app.get("/api/assistance/list", async (req, res) => {
@@ -224,7 +368,10 @@ app.get("/api/assistance/list", async (req, res) => {
       });
     }
 
-    const { data, error } = await supabaseAdmin
+    const {
+      data,
+      error
+    } = await supabaseAdmin
       .from("glf_assistance_requests")
       .select("*")
       .order("created_at", {
@@ -258,10 +405,6 @@ app.post("/api/assistance/verify", async (req, res) => {
       admin_secret
     } = req.body;
 
-    // --------------------------------------------------
-    // ADMIN SECRET CHECK
-    // --------------------------------------------------
-
     if (!admin_secret || !ADMIN_SECRET) {
       return res.status(403).json({
         message: "Admin verification data missing"
@@ -282,7 +425,7 @@ app.post("/api/assistance/verify", async (req, res) => {
 
     if (!request_id) {
       return res.status(400).json({
-        message: "Payment verification data missing"
+        message: "Request ID missing"
       });
     }
 
@@ -291,10 +434,6 @@ app.post("/api/assistance/verify", async (req, res) => {
         message: "Supabase admin client not configured"
       });
     }
-
-    // --------------------------------------------------
-    // GET REQUEST
-    // --------------------------------------------------
 
     const {
       data: existing,
@@ -305,19 +444,11 @@ app.post("/api/assistance/verify", async (req, res) => {
       .eq("id", request_id)
       .single();
 
-    if (fetchError) {
-      throw fetchError;
-    }
-
-    if (!existing) {
+    if (fetchError || !existing) {
       return res.status(404).json({
         message: "Request not found"
       });
     }
-
-    // --------------------------------------------------
-    // ALREADY VERIFIED
-    // --------------------------------------------------
 
     if (existing.status === "Verified") {
       return res.json({
@@ -327,10 +458,6 @@ app.post("/api/assistance/verify", async (req, res) => {
         data: existing
       });
     }
-
-    // --------------------------------------------------
-    // REJECT
-    // --------------------------------------------------
 
     if (action === "reject") {
       const {
@@ -357,21 +484,11 @@ app.post("/api/assistance/verify", async (req, res) => {
       });
     }
 
-    // --------------------------------------------------
-    // ONLY VERIFY ACTION ALLOWED
-    // --------------------------------------------------
-
     if (action !== "verify") {
       return res.status(400).json({
         message: "Invalid verification action"
       });
     }
-
-    // --------------------------------------------------
-    // IMPORTANT:
-    // VERIFIED AMOUNT COMES FROM DATABASE REQUEST.
-    // CLIENT CANNOT OVERRIDE IT.
-    // --------------------------------------------------
 
     const amountToVerify = Number(existing.amount);
 
@@ -383,10 +500,6 @@ app.post("/api/assistance/verify", async (req, res) => {
         message: "Invalid payment amount in database"
       });
     }
-
-    // --------------------------------------------------
-    // UPDATE REQUEST
-    // --------------------------------------------------
 
     const {
       data: updated,
@@ -405,11 +518,6 @@ app.post("/api/assistance/verify", async (req, res) => {
       throw updateError;
     }
 
-    // --------------------------------------------------
-    // CHECK EXISTING LEDGER ENTRY
-    // Prevent duplicate credit
-    // --------------------------------------------------
-
     const {
       data: existingLedger,
       error: ledgerCheckError
@@ -424,10 +532,6 @@ app.post("/api/assistance/verify", async (req, res) => {
       throw ledgerCheckError;
     }
 
-    // --------------------------------------------------
-    // CREATE CREDIT ONLY ONCE
-    // --------------------------------------------------
-
     if (!existingLedger || existingLedger.length === 0) {
       const {
         error: ledgerInsertError
@@ -436,6 +540,7 @@ app.post("/api/assistance/verify", async (req, res) => {
         .insert([
           {
             request_id: request_id,
+            account_id: existing.account_id,
             utr_number: existing.utr_number,
             amount: amountToVerify,
             type: "CREDIT",
@@ -448,10 +553,6 @@ app.post("/api/assistance/verify", async (req, res) => {
         throw ledgerInsertError;
       }
     }
-
-    // --------------------------------------------------
-    // RESPONSE
-    // --------------------------------------------------
 
     res.json({
       verified: true,
@@ -470,7 +571,89 @@ app.post("/api/assistance/verify", async (req, res) => {
 });
 
 // ======================================================
-// VERIFIED BALANCE
+// VERIFIED GLF ACCOUNT BALANCE
+// ======================================================
+
+app.get("/api/glf/account/:account_id/balance", async (req, res) => {
+  try {
+    if (!supabaseAdmin) {
+      return res.status(500).json({
+        error: "Supabase admin client not configured"
+      });
+    }
+
+    const accountId = String(req.params.account_id || "").trim();
+
+    if (!accountId) {
+      return res.status(400).json({
+        error: "Account ID required"
+      });
+    }
+
+    const {
+      data: credits,
+      error: creditError
+    } = await supabaseAdmin
+      .from("glf_ledger")
+      .select("amount")
+      .eq("account_id", accountId)
+      .eq("status", "Verified")
+      .eq("type", "CREDIT");
+
+    if (creditError) {
+      throw creditError;
+    }
+
+    const {
+      data: debits,
+      error: debitError
+    } = await supabaseAdmin
+      .from("glf_ledger")
+      .select("amount")
+      .eq("account_id", accountId)
+      .eq("status", "Verified")
+      .eq("type", "DEBIT");
+
+    if (debitError) {
+      throw debitError;
+    }
+
+    const creditTotal = (credits || []).reduce(
+      (sum, row) =>
+        sum + (Number(row.amount) || 0),
+      0
+    );
+
+    const debitTotal = (debits || []).reduce(
+      (sum, row) =>
+        sum + (Number(row.amount) || 0),
+      0
+    );
+
+    const balance = creditTotal - debitTotal;
+
+    res.json({
+      success: true,
+      account_id: accountId,
+      balance,
+      total_verified_credits: creditTotal,
+      total_verified_debits: debitTotal,
+      verified_credit_count: (credits || []).length,
+      note:
+        "Balance calculated only from verified ledger transactions"
+    });
+
+  } catch (e) {
+    console.error("Account balance error:", e);
+
+    res.status(500).json({
+      error: "Account balance fetch failed"
+    });
+  }
+});
+
+// ======================================================
+// GLOBAL VERIFIED BALANCE
 // ======================================================
 
 app.get("/api/ledger/balance", async (req, res) => {
@@ -480,10 +663,6 @@ app.get("/api/ledger/balance", async (req, res) => {
         error: "Supabase admin client not configured"
       });
     }
-
-    // --------------------------------------------------
-    // CREDIT = VERIFIED ONLY
-    // --------------------------------------------------
 
     const {
       data: credits,
@@ -497,10 +676,6 @@ app.get("/api/ledger/balance", async (req, res) => {
     if (creditError) {
       throw creditError;
     }
-
-    // --------------------------------------------------
-    // DEBIT = VERIFIED ONLY
-    // --------------------------------------------------
 
     const {
       data: debits,
@@ -534,7 +709,8 @@ app.get("/api/ledger/balance", async (req, res) => {
       total_verified_credits: creditTotal,
       total_verified_debits: debitTotal,
       verified_credit_count: (credits || []).length,
-      note: "Balance calculated from verified ledger transactions only"
+      note:
+        "Global balance calculated from verified ledger transactions only"
     });
 
   } catch (e) {
@@ -553,11 +729,18 @@ app.get("/api/ledger/balance", async (req, res) => {
 app.post("/api/withdrawal/request", async (req, res) => {
   try {
     const {
+      account_id,
       amount,
       destination
     } = req.body;
 
     const withdrawalAmount = Number(amount);
+
+    if (!account_id) {
+      return res.status(400).json({
+        message: "GLF Account ID kavali"
+      });
+    }
 
     if (
       !Number.isFinite(withdrawalAmount) ||
@@ -568,26 +751,11 @@ app.post("/api/withdrawal/request", async (req, res) => {
       });
     }
 
-    if (
-      !process.env.PAYOUT_PROVIDER_API_KEY ||
-      !process.env.PAYOUT_PROVIDER_URL
-    ) {
-      return res.status(503).json({
-        message:
-          "Payment provider not configured. " +
-          "Authorized payout provider must be configured separately."
-      });
-    }
-
     if (!supabaseAdmin) {
       return res.status(500).json({
         message: "Supabase admin client not configured"
       });
     }
-
-    // --------------------------------------------------
-    // VERIFIED CREDITS
-    // --------------------------------------------------
 
     const {
       data: credits,
@@ -595,6 +763,7 @@ app.post("/api/withdrawal/request", async (req, res) => {
     } = await supabaseAdmin
       .from("glf_ledger")
       .select("amount")
+      .eq("account_id", account_id)
       .eq("status", "Verified")
       .eq("type", "CREDIT");
 
@@ -602,16 +771,13 @@ app.post("/api/withdrawal/request", async (req, res) => {
       throw creditError;
     }
 
-    // --------------------------------------------------
-    // VERIFIED DEBITS
-    // --------------------------------------------------
-
     const {
       data: debits,
       error: debitError
     } = await supabaseAdmin
       .from("glf_ledger")
       .select("amount")
+      .eq("account_id", account_id)
       .eq("status", "Verified")
       .eq("type", "DEBIT");
 
@@ -633,22 +799,12 @@ app.post("/api/withdrawal/request", async (req, res) => {
 
     const available = creditTotal - debitTotal;
 
-    // --------------------------------------------------
-    // BALANCE CHECK
-    // --------------------------------------------------
-
     if (withdrawalAmount > available) {
       return res.status(400).json({
         message:
           `Insufficient verified balance. Available: ${available}`
       });
     }
-
-    // --------------------------------------------------
-    // IMPORTANT:
-    // This creates a pending withdrawal record only.
-    // It does NOT create money or a bank account.
-    // --------------------------------------------------
 
     const {
       data: withdrawal,
@@ -657,6 +813,7 @@ app.post("/api/withdrawal/request", async (req, res) => {
       .from("glf_ledger")
       .insert([
         {
+          account_id: account_id,
           amount: Math.round(withdrawalAmount),
           type: "DEBIT",
           status: "Pending Verification",
@@ -674,8 +831,7 @@ app.post("/api/withdrawal/request", async (req, res) => {
       success: true,
       status: "Pending Verification",
       message:
-        "Withdrawal request created. " +
-        "Actual payout requires authorized payment provider processing.",
+        "Withdrawal request created. Actual payout requires an authorized payment provider.",
       data: withdrawal
     });
 
@@ -696,5 +852,6 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log(
-    `GLF Backend running on ${PORT} - Verified-only ledger active`
+    `GLF Backend running on ${PORT} - Account + Verified Ledger active`
   );
+});
