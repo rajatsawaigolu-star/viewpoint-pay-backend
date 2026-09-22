@@ -698,4 +698,3 @@ app.listen(PORT, () => {
   console.log(
     `GLF Backend running on ${PORT} - Verified-only ledger active`
   );
-});
