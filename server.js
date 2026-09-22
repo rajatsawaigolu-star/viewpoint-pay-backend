@@ -5,59 +5,57 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// --- Existing Redis Logic (As it is - No change) ---
 const memStore = {};
-async function redisGet(k){ if(!process.env.UPSTASH_REDIS_REST_URL) return memStore[k]||null; try{ const u=`${process.env.UPSTASH_REDIS_REST_URL}/get/${encodeURIComponent(k)}`; const r=await fetch(u,{headers:{Authorization:`Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`}}); const d=await r.json(); return d.result?JSON.parse(d.result):null; }catch{ return memStore[k]||null; } }
-async function redisSet(k,v){ if(!process.env.UPSTASH_REDIS_REST_URL){ memStore[k]=v; return; } try{ const u=`${process.env.UPSTASH_REDIS_REST_URL}/set/${encodeURIComponent(k)}/${encodeURIComponent(JSON.stringify(v))}`; await fetch(u,{headers:{Authorization:`Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`}}); }catch{ memStore[k]=v; } }
-async function redisDel(k){ if(!process.env.UPSTASH_REDIS_REST_URL){ delete memStore[k]; return; } try{ const u=`${process.env.UPSTASH_REDIS_REST_URL}/del/${encodeURIComponent(k)}`; await fetch(u,{headers:{Authorization:`Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`}}); delete memStore[k]; }catch{ delete memStore[k]; } }
+async function redisGet(k){
+if(!process.env.UPSTASH_REDIS_REST_URL) return memStore[k]||null; try{ const u=`${process.env.UPSTASH_REDIS_REST_URL}/get/${encodeURIComponent(k)}`; const r=await fetch(u,{headers:{Authorization:`Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`}}); const d=await r.json(); return d.result?JSON.parse(d.result):null; }catch{ return memStore[k]||null; } }
+async function redisSet(k,v){
+if(!process.env.UPSTASH_REDIS_REST_URL){ memStore[k]=v; return; } try{ const u=`${process.env.UPSTASH_REDIS_REST_URL}/set/${encodeURIComponent(k)}/${encodeURIComponent(JSON.stringify(v))}`; await fetch(u,{headers:{Authorization:`Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`}}); }catch{ memStore[k]=v; } }
+async function redisDel(k){
+if(!process.env.UPSTASH_REDIS_REST_URL){ delete memStore[k]; return; } try{ const u=`${process.env.UPSTASH_REDIS_REST_URL}/del/${encodeURIComponent(k)}`; await fetch(u,{headers:{Authorization:`Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`}}); }catch{ delete memStore[k]; } }
 
-const VIDEO_URL = "https://files.catbox.moe/p078vg.mp4";
-
-app.get("/", (req,res)=> res.send("Backend LIVE ✅ One-Time Access"));
-
-app.get("/api/content", (req,res)=> res.json({
-  title: "Informational Fruit Video - Full Video ₹20",
-  price: 20,
-  upi_id: process.env.UPI_ID || "YOUR_UPI@okaxis"
-}));
-
-// VERIFY UTR -> ONE TIME TOKEN
-app.post("/api/verify-payment", async (req,res)=>{
-  try{
-    const ref = (req.body.utr || "").toString().trim();
-    if(!/^[0-9]{12}$/.test(ref)){
-      return res.json({ success:false, msg:"Invalid Reference Number\nPlease complete the payment and enter the valid UPI transaction reference number." });
-    }
-    const existing = await redisGet(`utr_${ref}`);
-    if(existing){
-      return res.json({ success:false, msg:"This Reference Number Has Already Been Used." });
-    }
-    // One-time token - no expiry, only one-time use
-    const token = "tok_"+crypto.randomBytes(10).toString("hex");
-    await redisSet(`utr_${ref}`, { token, used: true, createdAt: Date.now() });
-    await redisSet(`token_${token}`, { utr: ref, used: false });
-    return res.json({ success:true, token, msg:"Payment Verified ✓ — Access Granted" });
-  }catch(e){
-    return res.status(500).json({ success:false, msg:"Please try again." });
+// --- NEW: GLF MODULE - TRIAL (Separate, No Razorpay Secret) ---
+let supabase = null;
+let supabaseAdmin = null;
+try {
+  const { createClient } = require('@supabase/supabase-js');
+  if(process.env.SUPABASE_URL){
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+    supabaseAdmin = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY);
   }
+} catch(e){ console.log("Supabase not configured yet"); }
+
+const UPI_ID = "pgangadhar444-1@oksbi";
+
+// 1. Health Check
+app.get('/', (req,res)=> res.json({ ok:true, project:"viewpoint-pay-backend", glf_module: "active" }));
+
+// 2. Payment Info (Safe)
+app.get('/api/payment-info', (req,res)=>{
+  res.json({ upiId: UPI_ID, name: "View Point - GLF", note: "Manual Verification Only" });
 });
 
-// UNLOCK - ONE TIME ONLY, THEN DELETE
-app.post("/api/unlock-video", async (req,res)=>{
+// 3. Submit UTR -> Pending Verification
+app.post('/api/assistance/request', async (req,res)=>{
   try{
-    const {token} = req.body;
-    if(!token) return res.json({ success:false, msg:"Please pay ₹20 to watch." });
-    const data = await redisGet(`token_${token}`);
-    if(!data) return res.json({ success:false, msg:"Please pay ₹20 to watch. Token expired or already used." });
-    if(data.used) {
-      await redisDel(`token_${token}`);
-      return res.json({ success:false, msg:"This video access has already been used. Please pay again for one more view." });
-    }
-    // Mark as used and delete immediately after first unlock - ONE TIME ONLY
-    await redisDel(`token_${token}`);
-    // Keep UTR as used forever - never allow reuse
-    res.json({ success:true, video: VIDEO_URL, oneTime: true });
-  }catch(e){ res.status(500).json({ success:false, msg:"Unable to unlock." }); }
+    if(!supabase) return res.status(500).json({error:'Supabase not connected'});
+    const { amount, utr_number, user_name } = req.body;
+    if(!utr_number || utr_number.length < 6) return res.status(400).json({error:'Valid UTR kavali'});
+    const { data, error } = await supabase.from('glf_assistance_requests').insert([{
+      amount: parseInt(amount)||2000,
+      utr_number,
+      user_name: user_name || 'Trial User',
+      payment_method: 'UPI_QR',
+      upi_id_used: UPI_ID,
+      status: 'Pending Verification'
+    }]).select();
+    if(error) throw error;
+    res.json({ success:true, status:'Pending Verification', data });
+  } catch(e){ res.status(500).json({error:e.message}) }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, ()=> console.log(`Live ✅ One-Time Flow on port ${PORT}`));
+// 4. List All (For Admin)
+app.get('/api/assistance/list', async (req,res)=>{
+  try{
+    if(!supabase) return res.json([]);
+    const { data } = await supabase.from('glf_assistance_requests').
