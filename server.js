@@ -368,7 +368,7 @@ app.get(
         });
       }
 
-      let balance = 3000000;
+      let balance = 0;
 
       for (const transaction of ledger || []) {
         const amount = numberValue(
