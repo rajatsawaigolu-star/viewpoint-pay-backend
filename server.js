@@ -346,4 +346,44 @@ app.post("/razorpay-webhook", async (req, res) => {
 /* =====================================================
    VERCEL
    ===================================================== */
+
+/* =====================================================
+   DEBUG ENV (temporary)
+   ===================================================== */
+app.get("/debug/env", async (req, res) => {
+  const url = process.env.SUPABASE_URL || "NOT_SET";
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || "NOT_SET";
+
+  let dbTest = "not_attempted";
+  let rowCount = 0;
+  let dbError = null;
+
+  try {
+    const { data, error, count } = await supabaseAdmin
+      .from("glf_accounts")
+      .select("*", { count: "exact" });
+    if (error) {
+      dbError = error.message;
+      dbTest = "error";
+    } else {
+      dbTest = "success";
+      rowCount = count || (data ? data.length : 0);
+    }
+  } catch (e) {
+    dbError = e.message;
+    dbTest = "exception";
+  }
+
+  return res.json({
+    supabase_url: url,
+    url_has_correct_project: url.includes("zgsugeblboajysasffwi"),
+    service_key_first_20: key === "NOT_SET" ? "NOT_SET" : key.slice(0, 20),
+    service_key_length: key.length,
+    service_key_looks_like_jwt: key.startsWith("eyJ"),
+    db_query_test: dbTest,
+    db_row_count: rowCount,
+    db_error: dbError,
+  });
+});
+
 module.exports = app;
